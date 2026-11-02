@@ -85,3 +85,29 @@ class TestStagingRecords(unittest.TestCase):
 			called_records = list(mock_stage_records.call_args.kwargs["records"])
 			self.assertEqual(len(called_records), 1)
 			self.assertEqual(called_records[0]["amount"], 1200.00)
+
+	def test_stage_records_description_preserved_untruncated(self):
+		"""stage_records preserves rec['description'] as is, including strings > 140 chars."""
+		from vyogo_frappe_qif.importer.staging import STAGING_COLUMNS
+
+		long_desc = "X" * 300
+		records = [
+			{
+				"date": "2026-05-12",
+				"amount": -50.0,
+				"payee": "Short Payee",
+				"memo": "Short Memo",
+				"description": long_desc,
+				"reference_no": "REF-123",
+				"occurrence_idx": 1,
+			}
+		]
+		mock_bulk_insert = MagicMock()
+		with patch("frappe.db.bulk_insert", mock_bulk_insert):
+			with patch("frappe.db.commit"):
+				stage_records("SESSION-DESC", records, batch_size=10)
+
+		row_tuple = mock_bulk_insert.call_args[0][2][0]
+		desc_idx = STAGING_COLUMNS.index("description")
+		self.assertEqual(row_tuple[desc_idx], long_desc)
+		self.assertEqual(len(row_tuple[desc_idx]), 300)

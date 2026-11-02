@@ -18,24 +18,31 @@ function wrap_existing_handlers() {
     });
 }
 
+function set_qif_restrictions(frm) {
+    const file_field = frm.get_field("import_file");
+    if (file_field && file_field.df) {
+        file_field.df.options = file_field.df.options || {};
+        file_field.df.options.restrictions = file_field.df.options.restrictions || {};
+        let allowed = file_field.df.options.restrictions.allowed_file_types || [".csv", ".xls", ".xlsx", ".TXT", ".txt"];
+        if (!allowed.includes(".qif")) {
+            allowed.push(".qif", ".QIF");
+        }
+        file_field.df.options.restrictions.allowed_file_types = allowed;
+    }
+}
+
 // Wrap handlers on script load
 wrap_existing_handlers();
 
 frappe.ui.form.on("Bank Statement Import", {
+    onload(frm) {
+        wrap_existing_handlers();
+        set_qif_restrictions(frm);
+    },
+
     setup(frm) {
         wrap_existing_handlers();
-
-        // Allow .qif and .QIF in the upload dialog file restrictions
-        const file_field = frm.get_field("import_file");
-        if (file_field && file_field.df) {
-            file_field.df.options = file_field.df.options || {};
-            file_field.df.options.restrictions = file_field.df.options.restrictions || {};
-            let allowed = file_field.df.options.restrictions.allowed_file_types || [".csv", ".xls", ".xlsx", ".TXT", ".txt"];
-            if (!allowed.includes(".qif")) {
-                allowed.push(".qif", ".QIF");
-            }
-            file_field.df.options.restrictions.allowed_file_types = allowed;
-        }
+        set_qif_restrictions(frm);
 
         // Intercept frm.events.import_file to prevent ERPNext's get_preview_from_template call
         if (frm.events && frm.events.import_file && !frm.events.import_file._qif_wrapped) {
@@ -79,6 +86,9 @@ frappe.ui.form.on("Bank Statement Import", {
     },
 
     refresh(frm) {
+        wrap_existing_handlers();
+        set_qif_restrictions(frm);
+
         const file_url = (frm.doc.import_file || "").toLowerCase();
         const is_qif = file_url.endsWith(".qif");
 

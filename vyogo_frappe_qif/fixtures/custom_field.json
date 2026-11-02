@@ -1,0 +1,80 @@
+[
+ {
+  "default": "0",
+  "docstatus": 0,
+  "doctype": "Custom Field",
+  "dt": "Bank Statement Import",
+  "fieldname": "qif_total_rows",
+  "fieldtype": "Int",
+  "insert_after": "import_file",
+  "label": "QIF Total Rows",
+  "name": "Bank Statement Import-qif_total_rows",
+  "no_copy": 1,
+  "read_only": 1
+ },
+ {
+  "default": "0",
+  "docstatus": 0,
+  "doctype": "Custom Field",
+  "dt": "Bank Statement Import",
+  "fieldname": "qif_processed_rows",
+  "fieldtype": "Int",
+  "insert_after": "qif_total_rows",
+  "label": "QIF Processed Rows",
+  "name": "Bank Statement Import-qif_processed_rows",
+  "no_copy": 1,
+  "read_only": 1
+ },
+ {
+  "default": "0",
+  "docstatus": 0,
+  "doctype": "Custom Field",
+  "dt": "Bank Statement Import",
+  "fieldname": "qif_completed_rows",
+  "fieldtype": "Int",
+  "insert_after": "qif_processed_rows",
+  "label": "QIF Completed Rows",
+  "name": "Bank Statement Import-qif_completed_rows",
+  "no_copy": 1,
+  "read_only": 1
+ },
+ {
+  "default": "0",
+  "docstatus": 0,
+  "doctype": "Custom Field",
+  "dt": "Bank Statement Import",
+  "fieldname": "qif_skipped_rows",
+  "fieldtype": "Int",
+  "insert_after": "qif_completed_rows",
+  "label": "QIF Skipped Rows",
+  "name": "Bank Statement Import-qif_skipped_rows",
+  "no_copy": 1,
+  "read_only": 1
+ },
+ {
+  "default": "0",
+  "docstatus": 0,
+  "doctype": "Custom Field",
+  "dt": "Bank Statement Import",
+  "fieldname": "qif_failed_rows",
+  "fieldtype": "Int",
+  "insert_after": "qif_skipped_rows",
+  "label": "QIF Failed Rows",
+  "name": "Bank Statement Import-qif_failed_rows",
+  "no_copy": 1,
+  "read_only": 1
+ },
+ {
+  "default": "0",
+  "docstatus": 0,
+  "doctype": "Custom Field",
+  "dt": "Bank Statement Import",
+  "fieldname": "qif_cancel_requested",
+  "fieldtype": "Check",
+  "insert_after": "qif_failed_rows",
+  "label": "QIF Cancel Requested",
+  "name": "Bank Statement Import-qif_cancel_requested",
+  "no_copy": 1,
+  "read_only": 0
+ }
+]

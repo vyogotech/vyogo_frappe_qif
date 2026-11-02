@@ -25,7 +25,8 @@ def is_multitenant_environment() -> bool:
 
 
 def _get_session_tenant_id() -> str | None:
-	session_data = getattr(frappe.local, "session", {}).get("data", {})
+	local_obj = getattr(frappe, "local", None)
+	session_data = getattr(local_obj, "session", {}).get("data", {}) if local_obj else {}
 	session_tenant = session_data.get("tenant_id")
 	if not session_tenant and hasattr(frappe, "session") and isinstance(frappe.session, dict):
 		session_tenant = frappe.session.get("tenant_id")
@@ -53,7 +54,8 @@ def get_current_tenant_id() -> str | None:
 	if not is_multitenant_environment():
 		return None
 
-	local_tenant = getattr(frappe.local, "current_tenant_id", None)
+	local_obj = getattr(frappe, "local", None)
+	local_tenant = getattr(local_obj, "current_tenant_id", None) if local_obj else None
 	if local_tenant and local_tenant != "SYSTEM":
 		return str(local_tenant)
 
@@ -105,7 +107,10 @@ def ensure_tenant_valid_dict_patch() -> None:
 	except ImportError:
 		pass
 
-	from frappe.model.base_document import BaseDocument
+	try:
+		from frappe.model.base_document import BaseDocument
+	except (ImportError, ModuleNotFoundError):
+		return
 
 	if getattr(BaseDocument, "_tenant_valid_dict_patched", False):
 		return

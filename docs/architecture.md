@@ -96,6 +96,27 @@ Ledger creation runs in batch chunks (default: 100 rows):
 3. **Socket.io Progress Notifications**:
    Emits `qif_import_progress` events after each batch commit with completed, skipped, and failed counters.
 
+### 4.1 Host-Driven In-Process Batch Loop (`process_pending_rows`)
+For hosts requiring custom execution environments or job runners without background RQ queues:
+- `process_pending_rows(import_session, batch_size=100, user=None, tenant_id=None, reference_builder=None, should_stop=None) -> dict`
+- Executes batch by batch inside the calling process with periodic database commits.
+- Synchronous invocation via `import_qif(async_run=False)` runs the entire statement in-process to completion.
+- Reuses the shared `_process_batch_core()` implementation with zero code duplication.
+
+### 4.2 Resource Progress Fields & Standard REST Querying
+Rather than requiring bespoke websocket listeners, `Bank Statement Import` features standard persisted read-only counters:
+- `qif_total_rows`, `qif_processed_rows`, `qif_completed_rows`, `qif_skipped_rows`, `qif_failed_rows`.
+- Synchronized to MariaDB after each batch commit and at finalisation.
+- Queryable via `GET /api/resource/Bank Statement Import/<name>`.
+
+### 4.3 Cancellation Flow (`qif_cancel_requested`)
+- Users or API callers set `qif_cancel_requested = 1` on `Bank Statement Import`.
+- Checked before each batch in both background queue and in-process loops.
+- When set:
+  1. Remaining `Pending` staging records are updated in bulk to `Skipped`.
+  2. Further batch chaining is suppressed.
+  3. Session is finalised and status updated.
+
 ---
 
 ## 5. Ledger Guard & Safe Rollback
@@ -110,6 +131,13 @@ To eliminate orphan records and safeguard audit integrity:
   ```
 - If any transaction has already been reconciled by an accountant in the ERPNext Bank Reconciliation Tool, rollback is strictly aborted.
 - If all transactions are unreconciled, they are deleted in a single transactional step and staging rows reset to `Pending`.
+
+### 5.1 Safe Bank Transaction Deletion (`on_trash` Hook)
+When an accountant or test deletes an individual `Bank Transaction`:
+- The `doc_events["Bank Transaction"]["on_trash"]` handler triggers `on_bank_transaction_trash()`.
+- Automatically executes `UPDATE tabQIF Staging Record SET bank_transaction = NULL WHERE bank_transaction = %s`.
+- Clears the foreign key reference before Frappe checks `check_if_doc_is_linked()`, preventing `frappe.LinkExistsError`.
+- Exposed as `clear_staging_bank_transaction_links(bank_transaction)` for standalone execution.
 
 ---
 

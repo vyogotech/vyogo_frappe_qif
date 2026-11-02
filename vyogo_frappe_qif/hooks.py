@@ -26,8 +26,32 @@ override_whitelisted_methods = {
 }
 
 doc_events = {
-	"Bank Statement Import": {"validate": "vyogo_frappe_qif.importer.erpnext_patch.doc_event_validate"}
+	"Bank Statement Import": {"validate": "vyogo_frappe_qif.importer.erpnext_patch.doc_event_validate"},
+	"Bank Transaction": {"on_trash": "vyogo_frappe_qif.importer.worker.on_bank_transaction_trash"},
 }
+
+fixtures = [
+	{
+		"dt": "Custom Field",
+		"filters": [
+			[
+				"name",
+				"in",
+				[
+					"Bank Statement Import-qif_total_rows",
+					"Bank Statement Import-qif_processed_rows",
+					"Bank Statement Import-qif_completed_rows",
+					"Bank Statement Import-qif_skipped_rows",
+					"Bank Statement Import-qif_failed_rows",
+					"Bank Statement Import-qif_cancel_requested",
+				],
+			]
+		],
+	}
+]
+
+after_migrate = "vyogo_frappe_qif.importer.custom_fields.ensure_custom_fields"
+after_install = "vyogo_frappe_qif.importer.custom_fields.ensure_custom_fields"
 
 # Apps
 # ------------------

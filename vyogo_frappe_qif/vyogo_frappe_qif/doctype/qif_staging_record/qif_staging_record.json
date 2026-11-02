@@ -23,6 +23,7 @@
   "bank_transaction",
   "processed_at",
   "memo",
+  "description",
   "error_message"
  ],
  "fields": [
@@ -128,6 +129,12 @@
    "fieldname": "memo",
    "fieldtype": "Small Text",
    "label": "Memo"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description",
+   "read_only": 1
   },
   {
    "fieldname": "error_message",

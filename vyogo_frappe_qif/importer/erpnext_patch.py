@@ -51,17 +51,26 @@ def _build_preview_columns() -> list[dict[str, Any]]:
 
 def build_qif_preview(file_path: str) -> frappe._dict:
 	"""Generate a lightweight preview dictionary for QIF statement files."""
+	import os
+
 	from vyogo_frappe_qif.importer.qif_parser import QifStreamParser
-	from vyogo_frappe_qif.importer.stream_reader import get_file_line_iterator
+	from vyogo_frappe_qif.importer.stream_reader import get_file_line_iterator, stream_lines_from_path
 
 	columns = _build_preview_columns()
 	rows = []
 	total = 0
 	try:
+		stream = None
 		file_name = frappe.db.get_value("File", {"file_url": file_path})
+		if not file_name and frappe.db.exists("File", file_path):
+			file_name = file_path
 		if file_name:
 			file_doc = frappe.get_doc("File", file_name)
 			stream = get_file_line_iterator(file_doc)
+		elif os.path.exists(file_path):
+			stream = stream_lines_from_path(file_path)
+
+		if stream is not None:
 			parser = QifStreamParser(stream)
 			for idx, r in enumerate(parser.iter_records(), 1):
 				total += 1
@@ -177,6 +186,7 @@ def patch_all() -> None:
 def patch_bank_statement_import() -> None:
 	"""Idempotently install monkey-patches for Bank Statement Import if needed."""
 	try:
+		import erpnext.accounts.doctype.bank_statement_import.bank_statement_import as bsi_mod
 		from erpnext.accounts.doctype.bank_statement_import.bank_statement_import import (
 			BankStatementImport,
 		)
@@ -187,6 +197,8 @@ def patch_bank_statement_import() -> None:
 		return
 
 	original_validate = BankStatementImport.validate
+	original_start_import = BankStatementImport.start_import
+	original_get_preview = getattr(BankStatementImport, "get_preview_from_template", None)
 
 	def _patched_validate(self: Any) -> Any:
 		file_url = (getattr(self, "import_file", None) or "").lower()
@@ -197,21 +209,54 @@ def patch_bank_statement_import() -> None:
 			return
 		return original_validate(self)
 
+	def _patched_start_import(self: Any) -> Any:
+		file_url = (getattr(self, "import_file", None) or "").lower()
+		if file_url.endswith(".qif"):
+			from vyogo_frappe_qif.api import import_qif
+
+			import_qif(bank_statement_import=self.name, async_run=True)
+			return True
+		return original_start_import(self)
+
+	def _patched_get_preview(
+		self: Any, import_file: str | None = None, google_sheets_url: str | None = None
+	) -> Any:
+		file_path = import_file or getattr(self, "import_file", None) or ""
+		if file_path.lower().endswith(".qif"):
+			return build_qif_preview(file_path)
+		if original_get_preview:
+			return original_get_preview(self, import_file=import_file, google_sheets_url=google_sheets_url)
+		return frappe._dict({"columns": _build_preview_columns(), "data": [], "warnings": []})
+
 	BankStatementImport.validate = _patched_validate
+	BankStatementImport.start_import = _patched_start_import
+	BankStatementImport.get_preview_from_template = _patched_get_preview
+
+	def _patched_module_get_preview(
+		data_import: str, import_file: str | None = None, google_sheets_url: str | None = None
+	) -> Any:
+		bsi = frappe.get_doc("Bank Statement Import", data_import)
+		bsi.check_permission()
+		file_path = import_file or getattr(bsi, "import_file", None) or ""
+		if file_path.lower().endswith(".qif"):
+			return build_qif_preview(file_path)
+		return bsi.get_preview_from_template(import_file, google_sheets_url)
+
+	bsi_mod.get_preview_from_template = _patched_module_get_preview
 	BankStatementImport._qif_patched = True
 
 
 def patch_importer_for_qif() -> None:
-	"""Patch Frappe's Importer.read_content to allow .qif file parsing without throwing Template Error."""
+	"""Patch Frappe's ImportFile.read_content to allow .qif file parsing without throwing Template Error."""
 	try:
-		from frappe.core.doctype.data_import.importer import Importer
+		from frappe.core.doctype.data_import.importer import ImportFile
 	except ImportError:
 		return
 
-	if getattr(Importer, "_qif_read_patched", False):
+	if getattr(ImportFile, "_qif_read_patched", False):
 		return
 
-	original_read_content = Importer.read_content
+	original_read_content = ImportFile.read_content
 
 	def _patched_read_content(self: Any, content: Any, extension: str) -> Any:
 		ext = (extension or "").lower()
@@ -235,5 +280,9 @@ def patch_importer_for_qif() -> None:
 			return data
 		return original_read_content(self, content, extension)
 
-	Importer.read_content = _patched_read_content
-	Importer._qif_read_patched = True
+	ImportFile.read_content = _patched_read_content
+	ImportFile._qif_read_patched = True
+
+
+# Apply patches immediately on module import
+patch_all()

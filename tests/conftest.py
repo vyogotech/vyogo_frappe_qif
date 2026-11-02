@@ -15,6 +15,24 @@ if "frappe" not in sys.modules:
 		def commit(self):
 			pass
 
+		def sql(self, *args, **kwargs):
+			return []
+
+		def exists(self, *args, **kwargs):
+			return None
+
+		def get_value(self, *args, **kwargs):
+			return None
+
+		def set_value(self, *args, **kwargs):
+			pass
+
+		def count(self, *args, **kwargs):
+			return 0
+
+		def has_column(self, *args, **kwargs):
+			return True
+
 	class FakeSession:
 		user = "Administrator"
 
@@ -26,6 +44,7 @@ if "frappe" not in sys.modules:
 			self.conf: dict[str, Any] = {}
 			self.session = FakeSession()
 			self.db = FakeDB()
+			self.local = type("FakeLocal", (), {})()
 			self.ValidationError = ValidationError
 
 		def _(self, msg: str) -> str:
@@ -61,5 +80,13 @@ if "frappe" not in sys.modules:
 			from datetime import datetime
 
 			return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+		@staticmethod
+		def flt(val: Any, precision: int | None = None) -> float:
+			try:
+				v = float(val)
+				return round(v, precision) if precision is not None else v
+			except (ValueError, TypeError):
+				return 0.0
 
 	sys.modules["frappe.utils"] = FakeFrappeUtils()
