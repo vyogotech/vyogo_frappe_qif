@@ -4,7 +4,8 @@ authors = [
     { name = "Vyogo Technologies", email = "dev@vyogo.tech"}
 ]
 description = "Native QIF statement importer for Frappe and ERPNext"
-requires-python = ">=3.14"
+license = { text = "AGPL-3.0" }
+requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [

@@ -3,7 +3,7 @@ app_title = "Vyogo Frappe QIF"
 app_publisher = "Vyogo Technologies"
 app_description = "Native QIF statement importer for Frappe and ERPNext"
 app_email = "dev@vyogo.tech"
-app_license = "mit"
+app_license = "AGPL-3.0"
 
 # Apps
 # ------------------

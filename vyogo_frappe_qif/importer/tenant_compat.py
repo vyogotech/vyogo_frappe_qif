@@ -119,3 +119,4 @@ def ensure_tenant_valid_dict_patch() -> None:
 
     BaseDocument.get_valid_dict = _patched_get_valid_dict
     BaseDocument._tenant_valid_dict_patched = True
+
