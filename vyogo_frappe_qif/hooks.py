@@ -6,15 +6,14 @@ app_email = "dev@vyogo.tech"
 app_license = "AGPL-3.0"
 
 try:
-    from vyogo_frappe_qif.importer.erpnext_patch import patch_all
-    patch_all()
+	from vyogo_frappe_qif.importer.erpnext_patch import patch_all
+
+	patch_all()
 except Exception:
-    pass
+	pass
 
 doc_events = {
-    "Bank Statement Import": {
-        "validate": "vyogo_frappe_qif.importer.erpnext_patch.doc_event_validate"
-    }
+	"Bank Statement Import": {"validate": "vyogo_frappe_qif.importer.erpnext_patch.doc_event_validate"}
 }
 
 # Apps
@@ -64,9 +63,7 @@ doc_events = {
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-doctype_js = {
-    "Bank Statement Import": "public/js/bank_statement_import.js"
-}
+doctype_js = {"Bank Statement Import": "public/js/bank_statement_import.js"}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_kanban_js = {"doctype" : "public/js/doctype_kanban.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
@@ -290,4 +287,3 @@ doctype_js = {
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

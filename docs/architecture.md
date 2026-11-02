@@ -1,74 +1,122 @@
 # Vyogo Frappe QIF — Technical Architecture
 
-This document describes the internal design, concurrency model, memory optimization, error recovery, and multi-tenant isolation mechanisms of `vyogo_frappe_qif`.
+This document describes the internal design, streaming model, concurrency controls, pluggable interfaces, memory optimization, error recovery, and multi-tenant isolation mechanisms of `vyogo_frappe_qif`.
 
 ---
 
-## 1. High-Speed Ingestion Pipeline
+## 1. True $O(1)$ Memory Ingestion Pipeline
 
-### O(1) Memory Streaming Parser
-Standard Frappe file importers read entire uploaded files into memory, parse them into a full array of document objects, and iterate over them. For large bank statements (100k+ transactions, 50MB+ QIF files), this causes severe Python memory consumption and worker OOM crashes.
+### Zero-Materialization Stream Reader (`stream_reader.py`)
+Traditional Frappe file importers read entire uploaded files into RAM via `file_doc.get_content()` or `f.read()`, splitting them into massive memory lists (`content.splitlines()`). For multi-megabyte statement files (100k+ transactions), this causes Python process memory ballooning and Out-Of-Memory (OOM) crashes in worker queues.
 
-`vyogo_frappe_qif` uses `QifStreamParser`:
-- Pure generator reading lines iteratively via `iter_records()`.
-- State machine tracks current record attributes (`D`, `T`, `P`, `M`, `N`, `L`, `C`) and yields clean dicts upon encountering the record delimiter (`^`).
-- Sniffs date formats automatically by evaluating the first valid date string against common date patterns (`%d/%m/%Y`, `%m/%d/%Y`, `%Y-%m-%d`, etc.).
+`vyogo_frappe_qif` enforces strict $O(1)$ memory streaming:
+1. **Incremental Stream Decoding**:
+   - `get_file_line_iterator(file_doc, file_path)` streams lines directly from disk or byte streams.
+   - Decodes incrementally using `utf-8-sig` with universal newlines, seamlessly supporting CRLF (`\r\n`), LF (`\n`), classic Mac CR (`\r`), and UTF-8 Byte Order Marks (`\ufeff`).
+2. **Pluggable Remote Storage Hook (`qif_file_line_reader`)**:
+   - For remote files (S3, GCS, Azure Blob, MinIO), statements are streamed directly over HTTP/gRPC without downloading the entire file to disk:
+     ```python
+     # hooks.py
+     qif_file_line_reader = ["my_app.storage.stream_file_lines"]
+     ```
+   - If a remote file is encountered and no hook is configured, a descriptive `frappe.ValidationError` is immediately raised.
 
-### Batch Staging via MariaDB `bulk_insert`
-Parsed records are not immediately converted to ERPNext `Bank Transaction` documents. Instead:
-- They are accumulated in batches of 2,500 records.
-- Injected directly into MariaDB `tabQIF Staging Record` using `frappe.db.bulk_insert()`.
-- Bypasses document-level ORM overhead during raw ingestion, enabling ingestion rates exceeding **5,000 records/second**.
-
----
-
-## 2. Occurrence Indexing & Deduplication
-
-QIF records lack globally unique transaction IDs from financial institutions. On any given day, an account may have multiple legitimate identical charges (e.g. three $4.50 coffee purchases or multiple transit fees).
-
-To disambiguate legitimate repeats while rejecting duplicate statement uploads:
-1. `QifStreamParser` tracks a daily occurrence dictionary: `(date, amount, payee) -> count`.
-2. Each transaction receives an `occurrence_idx` (1, 2, 3...).
-3. A deterministic deduplication hash is generated:
-   $$\text{hash} = \text{SHA256}(\text{tenant\_id} \parallel \text{company} \parallel \text{date} \parallel \text{amount} \parallel \text{payee} \parallel \text{occurrence\_idx})[:24]$$
+### Format-Agnostic Staging Engine (`staging.py`)
+Raw statements are decoupled from database persistence via `stage_records()`:
+- Accepts any generator or `Iterable[dict[str, Any]]` conforming to the normalized schema (`date`, `amount`, `payee`, `memo`, `reference_no`, `occurrence_idx`, `dedupe_hash`).
+- Batches records into chunks of 2,500 rows.
+- Flushes directly into MariaDB `tabQIF Staging Record` using raw SQL `frappe.db.bulk_insert()`.
+- Releases memory after each chunk, maintaining bounded peak memory (< 20MB even for statements with 200,000+ records).
 
 ---
 
-## 3. Transaction Isolation & Worker Architecture
+## 2. Pluggable Reference Builder & Deduplication
 
-### Chained Asynchronous Workers
-Ledger creation runs asynchronously via Frappe Redis Queue (`default` queue):
-1. Worker queries next `batch_size` (default: 100) records with `status='Pending'`.
-2. Each record is processed inside an individual database `SAVEPOINT`:
+In standard accounting systems, deduplication schemes and reference numbers vary widely across banking providers and internal ERP configurations.
+
+### Pluggable Resolver Hierarchy
+The worker resolves the reference generator via:
+1. **Explicit argument**: `reference_builder` passed to `import_qif()`, `start_qif_import()`, or `process_qif_batch()`.
+2. **Frappe Hook**: `qif_reference_builder` registered in `hooks.py`:
    ```python
-   frappe.db.savepoint(f"qif_{row.name}")
+   qif_reference_builder = ["my_app.bank.custom_reference_scheme"]
    ```
-3. If an individual record fails validation (e.g., closed accounting fiscal period, invalid bank account link):
-   - Only that record rolls back to its savepoint.
+3. **Default scheme**:
+   $$\text{reference\_number} = \text{row.reference\_no} \lor \text{"QIF-" + row.dedupe\_hash[:12]}$$
+
+### Dual-Use Idempotency Guarantee
+The resolved builder is executed with signature:
+```python
+builder(row: dict, bank_account: str) -> str
+```
+where `row` includes:
+- `date`, `amount`, `payee`, `memo`, `reference_no`, `occurrence_idx`, `dedupe_hash`, `description`.
+
+The exact resulting string is used for:
+1. The `Bank Transaction.reference_number` column.
+2. The idempotency filter querying existing records in `tabBank Transaction`.
+
+Re-uploading the same statement under the same or custom scheme automatically matches existing transactions and marks staging rows as `Skipped`.
+
+---
+
+## 3. Configurable Queue Routing
+
+Background statement processing can be routed to dedicated Redis Queues to prevent starvation of short interactive tasks:
+
+### Queue Resolution Hierarchy:
+1. Explicit runtime argument: `queue="custom_queue"`
+2. Site configuration (`site_config.json`):
+   ```json
+   {
+     "qif_import_queue": "financial_ingestion"
+   }
+   ```
+3. Frappe Hook: `qif_import_queue = ["financial_ingestion"]`
+4. Default fallback: `"long"` (because financial imports are long-running batch jobs).
+
+The resolved queue name is threaded across the asynchronous chain: each batch automatically enqueues the next batch on the exact same queue.
+
+---
+
+## 4. Transaction Isolation & Worker Architecture
+
+Ledger creation runs in batch chunks (default: 100 rows):
+1. **Row-Level Savepoint Isolation**:
+   ```python
+   savepoint_id = f"qif_{row.name.replace('-', '_')}"
+   frappe.db.savepoint(savepoint_id)
+   ```
+2. **Independent Failure Recovery**:
+   If an individual record fails (e.g. invalid account currency, closed fiscal period):
+   - The worker rolls back strictly to that row's `SAVEPOINT`.
    - The error is captured in `QIF Staging Record.error_message`.
-   - The full traceback is logged to Frappe's standard `tabError Log` table.
-   - The remaining 99 records in the batch proceed without interruption.
-4. The batch commits (`frappe.db.commit()`), updates Socket.io progress (`qif_import_progress`), and enqueues the next batch until all records are processed.
+   - Full diagnostic traceback is recorded in Frappe's standard `tabError Log`.
+   - Subsequent rows continue without interruption.
+3. **Socket.io Progress Notifications**:
+   Emits `qif_import_progress` events after each batch commit with completed, skipped, and failed counters.
 
 ---
 
-## 4. Ledger Guard & Safe Rollback
+## 5. Ledger Guard & Safe Rollback
 
-Unlike standard imports which leave orphaned transactions on partial failures:
-- Every `Bank Transaction` created has its `name` linked back to the `QIF Staging Record`.
-- The `undo_qif_import` method performs a safety check (**Ledger Guard**):
+To eliminate orphan records and safeguard audit integrity:
+- Every generated `Bank Transaction` is linked to its `QIF Staging Record`.
+- `undo_qif_import()` executes the **Ledger Guard**:
   ```sql
-  SELECT name FROM `tabBank Transaction` WHERE name IN (...) AND status = 'Reconciled'
+  SELECT name, reference_number 
+  FROM `tabBank Transaction` 
+  WHERE name IN (...) AND status = 'Reconciled'
   ```
-- If any transaction has been reconciled, rollback is strictly blocked to maintain accounting ledger integrity.
-- If no transactions are reconciled, all created `Bank Transaction` documents are safely removed, and staging records reset to `Pending`.
+- If any transaction has already been reconciled by an accountant in the ERPNext Bank Reconciliation Tool, rollback is strictly aborted.
+- If all transactions are unreconciled, they are deleted in a single transactional step and staging rows reset to `Pending`.
 
 ---
 
-## 5. Multi-Tenant SaaS Integration
+## 6. Multi-Tenant SaaS Integration
 
-When running in a multi-tenant environment (such as Vyogo SaaS Platform):
-- Tables use a raw `ALTER TABLE ... ADD COLUMN tenant_id` structure.
-- `tenant_compat.ensure_tenant_valid_dict_patch()` monkey-patches `BaseDocument.get_valid_dict()` so that `tenant_id` is serialized in Frappe's SQL insert statements.
-- Worker queue jobs restore the caller's session user and tenant state (`frappe.session["tenant_id"]` and `frappe.local.current_tenant_id`) preventing background worker default to `'SYSTEM'`.
-- Post-insert database verification guarantees table column consistency.
+In multi-tenant SaaS environments (e.g. `saas_platform`):
+- `tenant_compat.py` dynamically activates multi-tenant mode.
+- Monkey-patches `BaseDocument.get_valid_dict()` so raw DDL `tenant_id` columns persist during `insert()`.
+- Background worker restores user and tenant session contexts (`frappe.local.current_tenant_id` and `frappe.session.tenant_id`) preventing jobs from falling back to `'SYSTEM'`.
+- Idempotency checks and SQL queries are strictly scoped by `tenant_id`.
