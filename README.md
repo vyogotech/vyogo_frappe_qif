@@ -14,6 +14,11 @@ It provides an enterprise-grade financial ingestion pipeline featuring true $O(1
 ## Key Features
 
 - ⚡ **True $O(1)$ Memory Streaming Pipeline**: Streams statements directly from disk or remote storage line-by-line via incremental decoding (`utf-8-sig`, universal newlines handling CRLF, LF, CR, and BOM). Files are never materialized into memory twice.
+- 🔄 **In-Process Batch Loop (`process_pending_rows`)**: Host applications with custom job runners (Celery, temporal, kubernetes jobs, or local loops) can execute imports in-process with batch commits, progress tracking, and cooperative preemption (`should_stop`). Synchronous mode (`async_run=False`) processes statements to completion without queuing.
+- 📊 **Resource-Level Progress Fields**: Automatically tracks `qif_total_rows`, `qif_processed_rows`, `qif_completed_rows`, `qif_skipped_rows`, and `qif_failed_rows` directly on `Bank Statement Import` after each batch and at finalise. Clients can poll progress using standard Frappe REST API (`GET /api/resource/Bank Statement Import/<name>`).
+- 🛑 **Mid-Import Cancellation (`qif_cancel_requested`)**: Cancel running imports by setting `qif_cancel_requested = 1` on `Bank Statement Import`. The worker halts chaining, marks all remaining pending records as `Skipped`, and finalises cleanly.
+- 📝 **Preserved Transaction Descriptions**: Transmits full, untruncated descriptions directly to `Bank Transaction.description` (not capped at 140 characters).
+- 🗑️ **Safe Bank Transaction Deletion**: Doc event `on_trash` handler automatically unlinks staging records when a Bank Transaction is deleted, preventing Frappe `LinkExistsError`. Exposes `clear_staging_bank_transaction_links()` as a plain function.
 - 🔌 **Pluggable Storage Hook (`qif_file_line_reader`)**: Stream statements directly from remote object stores (S3, GCS, Azure Blob) without downloading the entire file to the web application server.
 - 🧩 **Pluggable Reference Scheme (`qif_reference_builder`)**: Inject host-specific reference number algorithms and idempotency keys to match existing transaction numbering schemes.
 - 🚦 **Configurable Queue Routing**: Execute statement imports on dedicated queues (`long`, `default`, or custom) configured via site config (`qif_import_queue`), hooks, or runtime arguments.
@@ -175,9 +180,76 @@ res = frappe.call("vyogo_frappe_qif.api.import_qif", bank_statement_import="BSI-
 print(res)
 # {"status": "queued", "import_session": "BSI-2026-00001", "total_staged": 1420, "queue": "long"}
 
-# To run synchronously (for batch scripts / testing):
+# To run synchronously in-process to completion:
 res = frappe.call("vyogo_frappe_qif.api.import_qif", bank_statement_import="BSI-2026-00001", async_run=False)
 ```
+
+---
+
+### 5. Host-Driven Batch Loop (Custom Job Runners)
+For host platforms with their own job orchestrators (e.g. Celery, Temporal, Kubernetes batch jobs), call `process_pending_rows` directly:
+
+```python
+from vyogo_frappe_qif.api import process_pending_rows
+
+# Executes batch-by-batch in calling process with periodic DB commits and progress updates:
+result = process_pending_rows(
+    import_session="BSI-2026-00001",
+    batch_size=100,
+    should_stop=lambda: check_worker_timeout(),
+)
+print("Finished counts:", result)
+# {"import_session": "BSI-2026-00001", "status": "Success", "total": 1000, "processed": 1000, "completed": 1000, "skipped": 0, "failed": 0}
+```
+
+---
+
+## Progress Tracking & Resource API
+
+Host applications can query progress using standard Frappe REST resource endpoints:
+
+```bash
+# Query progress fields:
+GET /api/resource/Bank Statement Import/BSI-2026-00001
+```
+
+Response includes real-time counters updated after every batch:
+```json
+{
+  "data": {
+    "name": "BSI-2026-00001",
+    "status": "In Progress",
+    "qif_total_rows": 1000,
+    "qif_processed_rows": 400,
+    "qif_completed_rows": 395,
+    "qif_skipped_rows": 5,
+    "qif_failed_rows": 0,
+    "qif_cancel_requested": 0
+  }
+}
+```
+
+---
+
+## Cancellation via Standard API
+
+To cancel an active import mid-flight, update `qif_cancel_requested`:
+
+```bash
+# Request cancellation:
+PUT /api/resource/Bank Statement Import/BSI-2026-00001
+Content-Type: application/json
+
+{
+  "qif_cancel_requested": 1
+}
+```
+
+Before processing the next batch, both background worker and `process_pending_rows`:
+1. Detect `qif_cancel_requested == 1`.
+2. Mark all remaining `Pending` staging rows as `Skipped`.
+3. Stop worker chaining immediately.
+4. Finalise the session cleanly with status `"Success"` or `"Partial Success"`.
 
 ---
 

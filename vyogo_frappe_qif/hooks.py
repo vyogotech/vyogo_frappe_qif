@@ -12,9 +12,46 @@ try:
 except Exception:
 	pass
 
-doc_events = {
-	"Bank Statement Import": {"validate": "vyogo_frappe_qif.importer.erpnext_patch.doc_event_validate"}
+override_doctype_class = {
+	"Bank Statement Import": "vyogo_frappe_qif.importer.erpnext_patch.CustomBankStatementImport"
 }
+
+override_whitelisted_methods = {
+	"erpnext.accounts.doctype.bank_statement_import.bank_statement_import.get_preview_from_template": (
+		"vyogo_frappe_qif.importer.erpnext_patch.get_preview_from_template"
+	),
+	"erpnext.accounts.doctype.bank_statement_import.bank_statement_import.form_start_import": (
+		"vyogo_frappe_qif.importer.erpnext_patch.form_start_import"
+	),
+}
+
+doc_events = {
+	"Bank Statement Import": {"validate": "vyogo_frappe_qif.importer.erpnext_patch.doc_event_validate"},
+	"Bank Transaction": {"on_trash": "vyogo_frappe_qif.importer.worker.on_bank_transaction_trash"},
+}
+
+fixtures = [
+	{
+		"dt": "Custom Field",
+		"filters": [
+			[
+				"name",
+				"in",
+				[
+					"Bank Statement Import-qif_total_rows",
+					"Bank Statement Import-qif_processed_rows",
+					"Bank Statement Import-qif_completed_rows",
+					"Bank Statement Import-qif_skipped_rows",
+					"Bank Statement Import-qif_failed_rows",
+					"Bank Statement Import-qif_cancel_requested",
+				],
+			]
+		],
+	}
+]
+
+after_migrate = "vyogo_frappe_qif.importer.custom_fields.ensure_custom_fields"
+after_install = "vyogo_frappe_qif.importer.custom_fields.ensure_custom_fields"
 
 # Apps
 # ------------------

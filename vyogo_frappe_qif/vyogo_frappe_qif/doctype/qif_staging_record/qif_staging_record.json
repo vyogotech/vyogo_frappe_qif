@@ -4,6 +4,8 @@
  "creation": "2026-11-02 18:20:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
+ "in_create": 0,
+ "read_only": 1,
  "field_order": [
   "tenant_id",
   "import_session",
@@ -21,6 +23,7 @@
   "bank_transaction",
   "processed_at",
   "memo",
+  "description",
   "error_message"
  ],
  "fields": [
@@ -128,6 +131,12 @@
    "label": "Memo"
   },
   {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description",
+   "read_only": 1
+  },
+  {
    "fieldname": "error_message",
    "fieldtype": "Small Text",
    "label": "Error Message"
@@ -143,7 +152,6 @@
  "owner": "Administrator",
  "permissions": [
   {
-   "create": 1,
    "delete": 1,
    "email": 1,
    "export": 1,
@@ -151,30 +159,24 @@
    "read": 1,
    "report": 1,
    "role": "System Manager",
-   "share": 1,
-   "write": 1
+   "share": 1
   },
   {
-   "create": 1,
-   "delete": 1,
    "email": 1,
    "export": 1,
    "print": 1,
    "read": 1,
    "report": 1,
    "role": "Accounts Manager",
-   "share": 1,
-   "write": 1
+   "share": 1
   },
   {
-   "create": 1,
    "email": 1,
    "export": 1,
    "print": 1,
    "read": 1,
    "report": 1,
-   "role": "Accounts User",
-   "write": 1
+   "role": "Accounts User"
   }
  ],
  "sort_field": "creation",

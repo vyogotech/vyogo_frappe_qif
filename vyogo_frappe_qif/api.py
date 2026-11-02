@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 import frappe
@@ -13,6 +13,8 @@ from vyogo_frappe_qif.importer.staging import stage_qif_content
 from vyogo_frappe_qif.importer.stream_reader import get_file_line_iterator
 from vyogo_frappe_qif.importer.tenant_compat import get_current_tenant_id
 from vyogo_frappe_qif.importer.worker import (
+	clear_staging_bank_transaction_links,
+	process_pending_rows,
 	process_qif_batch,
 	retry_failed_rows,
 	undo_qif_import,
@@ -49,13 +51,19 @@ def _resolve_session(
 	return bsi.name, file_url, company, bank_account
 
 
-def _get_statement_lines(file_path: str | None, file_url: str | None) -> Iterator[str]:
+def _get_statement_lines(
+	file_path: str | None, file_url: str | None, content: str | Iterable[str] | None = None
+) -> Iterator[str]:
+	if content is not None:
+		return iter(content.splitlines()) if isinstance(content, str) else content
 	if file_path:
 		return get_file_line_iterator(None, file_path=file_path)
 	if file_url:
 		file_doc = frappe.get_doc("File", {"file_url": file_url})
 		return get_file_line_iterator(file_doc)
-	frappe.throw("A valid file attached to Bank Statement Import, file_url, or file_path is required.")
+	frappe.throw(
+		"A valid file attached to Bank Statement Import, file_url, file_path, or content is required."
+	)
 
 
 def _enqueue_import_job(
@@ -83,6 +91,7 @@ def import_qif(
 	bank_statement_import: str | None = None,
 	file_url: str | None = None,
 	file_path: str | None = None,
+	content: str | Iterable[str] | None = None,
 	company: str | None = None,
 	bank_account: str | None = None,
 	date_format: str | None = None,
@@ -98,7 +107,7 @@ def import_qif(
 	session_id, file_url, company, bank_account = _resolve_session(
 		bank_statement_import, file_url, company, bank_account
 	)
-	lines = _get_statement_lines(file_path, file_url)
+	lines = _get_statement_lines(file_path, file_url, content)
 	tenant = get_current_tenant_id()
 	stage_res = stage_qif_content(session_id, lines, company, tenant, date_format)
 	resolved_queue = get_import_queue(queue)
@@ -113,15 +122,12 @@ def import_qif(
 			"message": f"Successfully staged {stage_res['total_staged']} records. Worker queued on '{resolved_queue}'.",
 		}
 
-	res = process_qif_batch(
-		session_id,
-		int(batch_size),
-		company,
-		bank_account,
-		frappe.session.user,
-		tenant,
-		reference_builder,
-		resolved_queue,
+	res = process_pending_rows(
+		import_session=session_id,
+		batch_size=int(batch_size),
+		user=frappe.session.user,
+		tenant_id=tenant,
+		reference_builder=reference_builder,
 	)
 	return {
 		"status": "completed",
@@ -208,3 +214,14 @@ def retry_failed(
 		reference_builder=reference_builder,
 		queue=queue,
 	)
+
+
+__all__ = [
+	"clear_staging_bank_transaction_links",
+	"import_qif",
+	"process_pending_rows",
+	"retry_failed",
+	"start_qif_import",
+	"undo_import",
+	"upload_and_stage_qif",
+]

@@ -33,6 +33,7 @@ STAGING_COLUMNS = [
 	"amount",
 	"payee",
 	"memo",
+	"description",
 	"reference_no",
 	"occurrence_idx",
 	"dedupe_hash",
@@ -82,6 +83,8 @@ def _build_staging_row(
 		payee=rec.get("payee"),
 		occurrence_idx=int(rec.get("occurrence_idx", 1)),
 	)
+	raw_desc = rec.get("description")
+	desc_val = str(raw_desc) if raw_desc is not None else ""
 	return (
 		rec_name,
 		tenant_id,
@@ -91,6 +94,7 @@ def _build_staging_row(
 		amount,
 		rec.get("payee", "")[:140] if rec.get("payee") else "",
 		rec.get("memo", "") or "",
+		desc_val,
 		rec.get("reference_no", "")[:140] if rec.get("reference_no") else "",
 		int(rec.get("occurrence_idx", 1)),
 		dedupe_hash,
@@ -151,6 +155,19 @@ def stage_records(
 
 		_flush_staging_batch(rows)
 		if frappe and hasattr(frappe, "db"):
+			if hasattr(frappe.db, "exists") and frappe.db.exists("Bank Statement Import", import_session):
+				frappe.db.set_value(
+					"Bank Statement Import",
+					import_session,
+					{
+						"qif_total_rows": total_count,
+						"qif_processed_rows": 0,
+						"qif_completed_rows": 0,
+						"qif_skipped_rows": 0,
+						"qif_failed_rows": 0,
+					},
+					update_modified=False,
+				)
 			frappe.db.commit()
 
 		return {"import_session": import_session, "total_staged": total_count, "tenant_id": tenant_id}
