@@ -73,11 +73,62 @@ frappectl app install vyogo_frappe_qif --site your-site.local
 
 ---
 
-## Usage
+## How to Start the Import Job
+
+You can start a QIF import in 4 simple ways:
+
+### 1. In the ERPNext UI (No Code)
+1. Go to **Accounting > Bank Statement Import** and click **Add Bank Statement Import**.
+2. Select your **Company**, **Bank Account**, and attach your `.qif` file.
+3. Save the document.
+4. Click the blue **"Start QIF Import"** button in the top right.
+   - The app instantly stages all transactions, queues the background worker, and tracks real-time progress.
+   - If you ever need to rollback, click **"Undo QIF Import"** (protected by Ledger Guard).
+
+---
+
+### 2. From Bench CLI (1 Line)
+```bash
+# Import an existing Bank Statement Import:
+bench --site your-site.local execute vyogo_frappe_qif.api.import_qif --kwargs '{"bank_statement_import": "BSI-2026-00001"}'
+
+# Or import a file directly from server disk:
+bench --site your-site.local execute vyogo_frappe_qif.api.import_qif --kwargs '{"file_path": "/path/to/statement.qif", "company": "My Company Pty Ltd", "bank_account": "Operating Account - Test Bank"}'
+```
+
+---
+
+### 3. Via REST API / cURL
+```bash
+curl -X POST https://your-site.local/api/method/vyogo_frappe_qif.api.import_qif \
+  -H "Authorization: token <api_key>:<api_secret>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bank_statement_import": "BSI-2026-00001"
+  }'
+```
+
+---
+
+### 4. In Python / Bench Console
+```python
+import frappe
+
+# All-in-one execution (auto-stages and enqueues worker):
+res = frappe.call("vyogo_frappe_qif.api.import_qif", bank_statement_import="BSI-2026-00001")
+print(res)
+# {"status": "queued", "import_session": "BSI-2026-00001", "total_staged": 1420}
+
+# To run synchronously (for batch scripts / testing):
+res = frappe.call("vyogo_frappe_qif.api.import_qif", bank_statement_import="BSI-2026-00001", async_run=False)
+```
+
+---
+
+## Detailed Step-by-Step API Usage
 
 ### 1. Ingest & Stage QIF Statements
-
-Stage statements via Frappe Python API or REST:
+Stage raw content into `tabQIF Staging Record` prior to ledger creation:
 
 ```python
 import frappe
@@ -96,7 +147,8 @@ print(result)
 # {'import_session': 'BSI-2026-00001', 'total_staged': 1420, 'tenant_id': None}
 ```
 
-### 2. Start Asynchronous Import
+### 2. Start Asynchronous Worker
+Queue batch processing (100 rows per batch with row-level SAVEPOINT isolation):
 
 ```python
 from vyogo_frappe_qif.importer.worker import process_qif_batch
@@ -112,6 +164,7 @@ frappe.enqueue(
 ```
 
 ### 3. Safe Undo with Ledger Guard
+Roll back an entire statement safely:
 
 ```python
 from vyogo_frappe_qif.importer.worker import undo_qif_import
@@ -132,6 +185,7 @@ All endpoints are whitelisted and accessible via standard Frappe REST API (`/api
 
 | Endpoint | Method | Parameters | Description |
 | :--- | :--- | :--- | :--- |
+| `vyogo_frappe_qif.api.import_qif` | `POST` | `bank_statement_import`, `file_path`, `company`, `bank_account`, `async_run` | **All-in-one import**: stages records and starts background worker. |
 | `vyogo_frappe_qif.api.upload_and_stage_qif` | `POST` | `import_session`, `file_url`, `company`, `date_format` | Reads QIF file and stages records into database. |
 | `vyogo_frappe_qif.api.start_qif_import` | `POST` | `import_session`, `batch_size` (default: 100) | Enqueues chained background worker. |
 | `vyogo_frappe_qif.api.undo_import` | `POST` | `import_session` | Safely deletes unreconciled transactions and resets staging. |

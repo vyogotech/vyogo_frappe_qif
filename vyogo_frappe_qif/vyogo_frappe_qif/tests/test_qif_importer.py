@@ -316,3 +316,34 @@ class TestQifImporter(unittest.TestCase):
         frappe.db.delete("QIF Staging Record", {"import_session": test_session})
         frappe.db.delete("Bank Statement Import", {"name": test_session})
         frappe.db.commit()
+
+    def test_all_in_one_import_qif_api(self):
+        """Test the all-in-one import_qif API method."""
+        import os
+        import tempfile
+        from vyogo_frappe_qif.api import import_qif
+
+        bank_account = _ensure_test_bank_account()
+        with tempfile.NamedTemporaryFile("w+", suffix=".qif", delete=False) as tmp:
+            tmp.write(SAMPLE_QIF)
+            tmp_path = tmp.name
+
+        try:
+            res = import_qif(
+                file_path=tmp_path,
+                company="Vyogo Technologies",
+                bank_account=bank_account,
+                async_run=False,
+            )
+            self.assertEqual(res["status"], "completed")
+            self.assertEqual(res["total_staged"], 3)
+
+            # Cleanup
+            undo_qif_import(res["import_session"])
+            frappe.db.delete("QIF Staging Record", {"import_session": res["import_session"]})
+            frappe.db.delete("Bank Statement Import", {"name": res["import_session"]})
+            frappe.db.commit()
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
