@@ -16,9 +16,47 @@ frappe.ui.form.on("Bank Statement Import", {
         }
     },
 
+    import_file(frm) {
+        const file_url = (frm.doc.import_file || "").toLowerCase();
+        if (file_url.endsWith(".qif")) {
+            // Intercept standard CSV/XLSX preview to avoid template error modal
+            frm.toggle_display("section_import_preview", true);
+            const wrapper = frm.get_field("import_preview").$wrapper;
+            wrapper.empty();
+            $(`
+                <div class="alert alert-info" style="margin-top: 10px; display: flex; align-items: center; justify-content: space-between;">
+                    <div>
+                        <strong>QIF Bank Statement Detected:</strong> <code>${frappe.utils.escape_html(frm.doc.import_file)}</code>
+                        <div class="text-muted" style="margin-top: 4px;">
+                            Managed by Vyogo QIF Importer (O(1) streaming parser with occurrence deduplication).
+                        </div>
+                    </div>
+                </div>
+            `).appendTo(wrapper);
+            frm.trigger("update_primary_action");
+        }
+    },
+
     refresh(frm) {
         const file_url = (frm.doc.import_file || "").toLowerCase();
         const is_qif = file_url.endsWith(".qif");
+
+        if (is_qif) {
+            // Also update the preview section immediately if opened
+            frm.toggle_display("section_import_preview", true);
+            const wrapper = frm.get_field("import_preview").$wrapper;
+            if (!wrapper.text().includes("QIF Bank Statement")) {
+                wrapper.empty();
+                $(`
+                    <div class="alert alert-info" style="margin-top: 10px;">
+                        <strong>QIF Bank Statement Detected:</strong> <code>${frappe.utils.escape_html(frm.doc.import_file)}</code>
+                        <div class="text-muted" style="margin-top: 4px;">
+                            Managed by Vyogo QIF Importer. Click <strong>"Start QIF Import"</strong> to process.
+                        </div>
+                    </div>
+                `).appendTo(wrapper);
+            }
+        }
 
         if (is_qif && !frm.is_new()) {
             if (frm.doc.status === "Pending" || !frm.doc.status) {

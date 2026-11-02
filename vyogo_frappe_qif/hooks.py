@@ -5,6 +5,18 @@ app_description = "Native QIF statement importer for Frappe and ERPNext"
 app_email = "dev@vyogo.tech"
 app_license = "AGPL-3.0"
 
+try:
+    from vyogo_frappe_qif.importer.erpnext_patch import patch_all
+    patch_all()
+except Exception:
+    pass
+
+doc_events = {
+    "Bank Statement Import": {
+        "validate": "vyogo_frappe_qif.importer.erpnext_patch.doc_event_validate"
+    }
+}
+
 # Apps
 # ------------------
 
