@@ -5,17 +5,21 @@
 [![ERPNext Compatible](https://img.shields.io/badge/ERPNext-v15%20%7C%20v16-blue.svg)](https://erpnext.com/)
 [![Python](https://img.shields.io/badge/Python->=3.10-blue.svg)](https://www.python.org/)
 
-**Vyogo Frappe QIF** is a high-performance, streaming QIF (Quicken Interchange Format) statement importer for **Frappe Framework** and **ERPNext**. 
+**Vyogo Frappe QIF** is a high-performance, truly streaming QIF (Quicken Interchange Format) statement importer for **Frappe Framework** and **ERPNext**. 
 
-It provides an enterprise-grade financial ingestion pipeline featuring $O(1)$ memory streaming parsing, batch SQL staging, asynchronous chained background workers with row-level transaction savepoints, audit-safe ledger guards, and native multi-tenant SaaS compatibility.
+It provides an enterprise-grade financial ingestion pipeline featuring true $O(1)$ memory streaming line decoding, format-agnostic batch SQL staging, pluggable reference scheme generation, configurable background queues, row-level transaction savepoints, audit-safe ledger guards, and native multi-tenant SaaS compatibility.
 
 ---
 
 ## Key Features
 
-- ⚡ **$O(1)$ Memory Streaming Parser**: Line-by-line generator parser capable of handling 50MB–100MB+ QIF statements without memory exhaustion.
+- ⚡ **True $O(1)$ Memory Streaming Pipeline**: Streams statements directly from disk or remote storage line-by-line via incremental decoding (`utf-8-sig`, universal newlines handling CRLF, LF, CR, and BOM). Files are never materialized into memory twice.
+- 🔌 **Pluggable Storage Hook (`qif_file_line_reader`)**: Stream statements directly from remote object stores (S3, GCS, Azure Blob) without downloading the entire file to the web application server.
+- 🧩 **Pluggable Reference Scheme (`qif_reference_builder`)**: Inject host-specific reference number algorithms and idempotency keys to match existing transaction numbering schemes.
+- 🚦 **Configurable Queue Routing**: Execute statement imports on dedicated queues (`long`, `default`, or custom) configured via site config (`qif_import_queue`), hooks, or runtime arguments.
+- 📦 **Format-Agnostic Staging Engine**: Modular `stage_records()` pipeline consumes any iterable of normalized transaction dictionaries (QIF, OFX, CSV, CAMT.053).
 - 📅 **Smart Date Sniffing & Disambiguation**: Automatically sniffs and parses UK/AU (`DD/MM/YYYY`) and US (`MM/DD/YYYY`) formats, handling 2-digit years, apostrophe separators (`'26`), and dotted formats.
-- 🔢 **Occurrence Indexing & Deduplication**: Disambiguates multiple identical charges occurring on the same date (e.g. repeated transit or coffee charges) via deterministic occurrence hashing.
+- 🔢 **Occurrence Indexing & Deduplication**: Disambiguates multiple identical charges occurring on the same date via deterministic occurrence hashing.
 - 🗄️ **Batch Staging**: High-speed ingestion using MariaDB `frappe.db.bulk_insert` into dedicated `QIF Staging Record` doctype prior to ledger commitment.
 - 🔄 **Chained Asynchronous Workers**: Non-blocking Redis Queue (RQ) workers processing 100 rows per batch, chaining subsequent batches asynchronously until complete.
 - 🛡️ **Row-Level Transaction Isolation**: Every staged record is processed within an individual SQL `SAVEPOINT`. A single corrupted row fails cleanly into Frappe's standard `tabError Log` without rolling back the entire batch.
@@ -29,47 +33,98 @@ It provides an enterprise-grade financial ingestion pipeline featuring $O(1)$ me
 
 ```mermaid
 flowchart TD
-    A["Raw QIF File (Bank Statement)"] --> B["QifStreamParser (O(1) Streaming Generator)"]
-    B --> C["stage_qif_content() (Batch bulk_insert)"]
-    C --> D[("tabQIF Staging Record")]
-    D --> E["Chained RQ Worker (process_qif_batch)"]
-    E --> F{"Row SAVEPOINT"}
-    F -->|Success| G[("tabBank Transaction")]
-    F -->|Duplicate| H["Mark Staging as Skipped"]
-    F -->|Validation Error| I["Rollback Savepoint + Log to tabError Log"]
-    G --> J["Update Staging to Completed"]
-    I --> K["Update Staging to Failed"]
-    J --> L{"More Pending Records?"}
-    K --> L
-    L -->|Yes| M["Chain Next Batch asynchronously"]
-    L -->|No| N["Finalize Import Session + Realtime Notify"]
+    A["Raw QIF File / Storage Stream"] --> B["get_file_line_iterator (Incremental UTF-8 Stream)"]
+    B --> C["QifStreamParser (O(1) Streaming Generator)"]
+    C --> D["stage_records() (Batches of 2,500 bulk_insert)"]
+    D --> E[("tabQIF Staging Record")]
+    E --> F["Chained RQ Worker (Configurable Queue: long/default)"]
+    F --> G["resolve_reference_builder (Custom / Default Hook)"]
+    G --> H{"Row SAVEPOINT & Dedupe Check"}
+    H -->|Success| I[("tabBank Transaction")]
+    H -->|Duplicate Found| J["Mark Staging as Skipped"]
+    H -->|Validation Error| K["Rollback Savepoint + Log to tabError Log"]
+    I --> L["Update Staging to Completed"]
+    K --> M["Update Staging to Failed"]
+    L --> N{"More Pending Records?"}
+    M --> N
+    N -->|Yes| O["Chain Next Batch on Configured Queue"]
+    N -->|No| P["Finalize Import Session + Realtime Notify"]
 ```
 
 ---
 
-## Installation
+## Normalized Record Schema
 
-### Using Frappe Bench
+The format-agnostic staging pipeline (`stage_records`) consumes an `Iterable[dict[str, Any]]` conforming to the following schema:
 
-```bash
-cd /path/to/frappe-bench
+| Field | Type | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `date` | `str` | ISO formatted transaction date (`YYYY-MM-DD`) | `"2026-05-12"` |
+| `amount` | `float` | Signed transaction amount (negative for withdrawal, positive for deposit) | `-55.00` |
+| `payee` | `str` | Name of payee or counterpart (optional, max 140 chars) | `"OFFICE SUPPLIES PTY LTD"` |
+| `memo` | `str` | Detailed transaction notes or memo (optional) | `"Tax invoice 1042"` |
+| `reference_no` | `str` | Check number, cheque ID, or external reference (optional, max 140 chars) | `"1001"` |
+| `occurrence_idx`| `int` | 1-based sequential occurrence count for same-day identical transactions | `1` |
+| `dedupe_hash` | `str` | Deterministic SHA256 dedupe key (computed automatically if omitted) | `"3a7f82b1c904"` |
 
-# Get the app
-bench get-app https://github.com/vyogotech/vyogo_frappe_qif.git --branch main
+---
 
-# Install on your site
-bench --site your-site.local install-app vyogo_frappe_qif
+## Extension Hooks & Configuration
 
-# Run migrations
-bench --site your-site.local migrate
+### 1. Storage Line Reader Hook (`qif_file_line_reader`)
+Stream file contents directly from cloud storage (AWS S3, Google Cloud Storage, MinIO, Azure Blob) without buffering the file on local disk:
+
+In your custom app's `hooks.py`:
+```python
+qif_file_line_reader = [
+    "my_custom_app.storage.stream_s3_file_lines"
+]
 ```
 
-### Using frappectl
-
-```bash
-frappectl app get https://github.com/vyogotech/vyogo_frappe_qif.git
-frappectl app install vyogo_frappe_qif --site your-site.local
+Signature:
+```python
+def stream_s3_file_lines(file_doc) -> Iterator[str]:
+    # Stream lines directly from remote storage
+    for line in s3_client.get_object(Bucket=..., Key=file_doc.file_url)["Body"].iter_lines():
+        yield line.decode("utf-8")
 ```
+
+### 2. Custom Reference Builder Hook (`qif_reference_builder`)
+Customize how `Bank Transaction.reference_number` and deduplication idempotency keys are generated:
+
+In your custom app's `hooks.py`:
+```python
+qif_reference_builder = [
+    "my_custom_app.reference.custom_ref_builder"
+]
+```
+
+Signature:
+```python
+def custom_ref_builder(row: dict, bank_account: str) -> str:
+    """
+    row contains: date, amount, payee, memo, reference_no, occurrence_idx, description, dedupe_hash
+    """
+    return f"REF-{bank_account[:6]}-{row['date']}-{row['occurrence_idx']}"
+```
+
+### 3. Configurable Queue Configuration
+By default, long-running statement imports are queued on `"long"`. You can configure the queue via:
+
+1. **Site Config (`site_config.json`)**:
+   ```json
+   {
+     "qif_import_queue": "bank_statement_workers"
+   }
+   ```
+2. **Frappe Hook (`hooks.py`)**:
+   ```python
+   qif_import_queue = ["bank_statement_workers"]
+   ```
+3. **API Call**:
+   ```python
+   frappe.call("vyogo_frappe_qif.api.import_qif", bank_statement_import="BSI-2026-00001", queue="short")
+   ```
 
 ---
 
@@ -82,7 +137,7 @@ You can start a QIF import in 4 simple ways:
 2. Select your **Company**, **Bank Account**, and attach your `.qif` file.
 3. Save the document.
 4. Click the blue **"Start QIF Import"** button in the top right.
-   - The app instantly stages all transactions, queues the background worker, and tracks real-time progress.
+   - The app stages all transactions with $O(1)$ memory usage, queues the background worker, and tracks real-time progress.
    - If you ever need to rollback, click **"Undo QIF Import"** (protected by Ledger Guard).
 
 ---
@@ -92,8 +147,8 @@ You can start a QIF import in 4 simple ways:
 # Import an existing Bank Statement Import:
 bench --site your-site.local execute vyogo_frappe_qif.api.import_qif --kwargs '{"bank_statement_import": "BSI-2026-00001"}'
 
-# Or import a file directly from server disk:
-bench --site your-site.local execute vyogo_frappe_qif.api.import_qif --kwargs '{"file_path": "/path/to/statement.qif", "company": "My Company Pty Ltd", "bank_account": "Operating Account - Test Bank"}'
+# Or import a file directly from server disk with custom queue:
+bench --site your-site.local execute vyogo_frappe_qif.api.import_qif --kwargs '{"file_path": "/path/to/statement.qif", "company": "My Company Pty Ltd", "bank_account": "Operating Account - Test Bank", "queue": "long"}'
 ```
 
 ---
@@ -104,7 +159,8 @@ curl -X POST https://your-site.local/api/method/vyogo_frappe_qif.api.import_qif 
   -H "Authorization: token <api_key>:<api_secret>" \
   -H "Content-Type: application/json" \
   -d '{
-    "bank_statement_import": "BSI-2026-00001"
+    "bank_statement_import": "BSI-2026-00001",
+    "queue": "long"
   }'
 ```
 
@@ -117,7 +173,7 @@ import frappe
 # All-in-one execution (auto-stages and enqueues worker):
 res = frappe.call("vyogo_frappe_qif.api.import_qif", bank_statement_import="BSI-2026-00001")
 print(res)
-# {"status": "queued", "import_session": "BSI-2026-00001", "total_staged": 1420}
+# {"status": "queued", "import_session": "BSI-2026-00001", "total_staged": 1420, "queue": "long"}
 
 # To run synchronously (for batch scripts / testing):
 res = frappe.call("vyogo_frappe_qif.api.import_qif", bank_statement_import="BSI-2026-00001", async_run=False)
@@ -125,45 +181,7 @@ res = frappe.call("vyogo_frappe_qif.api.import_qif", bank_statement_import="BSI-
 
 ---
 
-## Detailed Step-by-Step API Usage
-
-### 1. Ingest & Stage QIF Statements
-Stage raw content into `tabQIF Staging Record` prior to ledger creation:
-
-```python
-import frappe
-from vyogo_frappe_qif.importer.staging import stage_qif_content
-
-with open("statement.qif", "r") as f:
-    qif_text = f.read()
-
-result = stage_qif_content(
-    import_session="BSI-2026-00001",
-    content=qif_text,
-    company="My Company Pty Ltd",
-    date_format="%d/%m/%Y",  # Optional: sniffer auto-detects if omitted
-)
-print(result)
-# {'import_session': 'BSI-2026-00001', 'total_staged': 1420, 'tenant_id': None}
-```
-
-### 2. Start Asynchronous Worker
-Queue batch processing (100 rows per batch with row-level SAVEPOINT isolation):
-
-```python
-from vyogo_frappe_qif.importer.worker import process_qif_batch
-
-# Queue worker in Redis Queue (RQ)
-frappe.enqueue(
-    method="vyogo_frappe_qif.importer.worker.process_qif_batch",
-    queue="default",
-    import_session="BSI-2026-00001",
-    user=frappe.session.user,
-    batch_size=100,
-)
-```
-
-### 3. Safe Undo with Ledger Guard
+## Safe Undo with Ledger Guard
 Roll back an entire statement safely:
 
 ```python
@@ -176,20 +194,6 @@ except frappe.ValidationError as e:
     # Triggered if any transaction has already been Reconciled in ERPNext
     print("Rollback blocked by Ledger Guard:", e)
 ```
-
----
-
-## REST / Frappe RPC Endpoints
-
-All endpoints are whitelisted and accessible via standard Frappe REST API (`/api/method/...`):
-
-| Endpoint | Method | Parameters | Description |
-| :--- | :--- | :--- | :--- |
-| `vyogo_frappe_qif.api.import_qif` | `POST` | `bank_statement_import`, `file_path`, `company`, `bank_account`, `async_run` | **All-in-one import**: stages records and starts background worker. |
-| `vyogo_frappe_qif.api.upload_and_stage_qif` | `POST` | `import_session`, `file_url`, `company`, `date_format` | Reads QIF file and stages records into database. |
-| `vyogo_frappe_qif.api.start_qif_import` | `POST` | `import_session`, `batch_size` (default: 100) | Enqueues chained background worker. |
-| `vyogo_frappe_qif.api.undo_import` | `POST` | `import_session` | Safely deletes unreconciled transactions and resets staging. |
-| `vyogo_frappe_qif.api.retry_failed` | `POST` | `import_session` | Resets failed staging rows to Pending and re-enqueues worker. |
 
 ---
 
@@ -208,29 +212,17 @@ All endpoints are whitelisted and accessible via standard Frappe REST API (`/api
 
 ## Running Automated Tests
 
-Run the full test suite in your Frappe bench environment:
+Run the full bench test suite in your Frappe bench environment:
 
 ```bash
 bench --site your-site.local run-tests --app vyogo_frappe_qif
 ```
 
-Test suite coverage includes:
-- `test_qif_stream_parser`: Date sniffing, line parsing, and occurrence disambiguation.
-- `test_staging_multitenancy`: High-speed batch staging and tenant separation.
-- `test_batch_processing_and_idempotency`: Chunked processing and duplicate suppression.
-- `test_bank_transaction_tenant_persistence`: SQL column persistence across document models.
-- `test_ledger_guard_blocks_undo_for_reconciled`: Protection against rolling back reconciled transactions.
-- `test_row_failure_logs_to_error_log`: Verification that row-level exceptions write to Frappe's `Error Log`.
+Or run the fast pure unit test suite (including the 200,000-record $O(1)$ memory test) via pytest:
 
----
-
-## Contributing
-
-1. Fork the repository on GitHub.
-2. Create your feature branch (`git checkout -b feature/amazing-feature`).
-3. Commit your changes (`git commit -m 'feat: add amazing feature'`).
-4. Push to the branch (`git push origin feature/amazing-feature`).
-5. Open a Pull Request.
+```bash
+pytest tests
+```
 
 ---
 
