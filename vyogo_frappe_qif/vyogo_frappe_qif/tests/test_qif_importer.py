@@ -176,6 +176,53 @@ class TestQifImporter(unittest.TestCase):
         frappe.db.delete("Bank Statement Import", {"name": test_session})
         frappe.db.commit()
 
+    def test_bank_transaction_tenant_persistence(self):
+        """Test that Bank Transaction.tenant_id is persisted even when not in Frappe DocType model."""
+        bank_account = _ensure_test_bank_account()
+        test_tenant = "tenant-vyogo-audit-007"
+
+        bsi = frappe.get_doc(
+            {
+                "doctype": "Bank Statement Import",
+                "company": "Vyogo Technologies",
+                "bank_account": bank_account,
+                "status": "Pending",
+            }
+        ).insert(ignore_permissions=True)
+        test_session = bsi.name
+
+        stage_qif_content(
+            import_session=test_session,
+            content=SAMPLE_QIF,
+            company="Vyogo Technologies",
+            tenant_id=test_tenant,
+        )
+
+        process_qif_batch(
+            import_session=test_session,
+            user="Administrator",
+            tenant_id=test_tenant,
+            batch_size=10,
+        )
+
+        staged = frappe.get_all(
+            "QIF Staging Record",
+            filters={"import_session": test_session},
+            fields=["name", "bank_transaction"],
+        )
+        self.assertEqual(len(staged), 3)
+
+        if frappe.db.has_column("Bank Transaction", "tenant_id"):
+            for s in staged:
+                db_tenant = frappe.db.get_value("Bank Transaction", s.bank_transaction, "tenant_id")
+                self.assertEqual(db_tenant, test_tenant)
+
+        # Cleanup via Undo
+        undo_qif_import(test_session, tenant_id=test_tenant)
+        frappe.db.delete("QIF Staging Record", {"import_session": test_session})
+        frappe.db.delete("Bank Statement Import", {"name": test_session})
+        frappe.db.commit()
+
     def test_ledger_guard_blocks_undo_for_reconciled(self):
         """Test that undo_qif_import raises error if any Bank Transaction is Reconciled."""
         bank_account = _ensure_test_bank_account()
@@ -216,6 +263,56 @@ class TestQifImporter(unittest.TestCase):
         frappe.db.commit()
         undo_qif_import(test_session)
 
+        frappe.db.delete("QIF Staging Record", {"import_session": test_session})
+        frappe.db.delete("Bank Statement Import", {"name": test_session})
+        frappe.db.commit()
+
+    def test_row_failure_logs_to_error_log(self):
+        """Test that row-level failures create a record in tabError Log with traceback."""
+        from unittest.mock import patch
+        from erpnext.accounts.doctype.bank_transaction.bank_transaction import BankTransaction
+
+        bank_account = _ensure_test_bank_account()
+        bsi = frappe.get_doc(
+            {
+                "doctype": "Bank Statement Import",
+                "company": "Vyogo Technologies",
+                "bank_account": bank_account,
+                "status": "Pending",
+            }
+        ).insert(ignore_permissions=True)
+        test_session = bsi.name
+
+        stage_qif_content(
+            import_session=test_session,
+            content=SAMPLE_QIF,
+            company="Vyogo Technologies",
+        )
+
+        # Mock an exception on BankTransaction.insert to simulate a system/validation failure
+        with patch.object(BankTransaction, "insert", side_effect=ValueError("Simulated DB error")):
+            process_qif_batch(import_session=test_session, user="Administrator", batch_size=10)
+
+        # Verify staging records are marked Failed
+        failed_records = frappe.get_all(
+            "QIF Staging Record",
+            filters={"import_session": test_session, "status": "Failed"},
+            fields=["name", "error_message"],
+        )
+        self.assertEqual(len(failed_records), 3)
+        self.assertIn("Simulated DB error", failed_records[0].error_message)
+
+        # Verify record in Frappe's tabError Log
+        error_logs = frappe.get_all(
+            "Error Log",
+            filters={"reference_doctype": "Bank Statement Import", "reference_name": test_session},
+            fields=["name", "method", "error"],
+        )
+        self.assertGreaterEqual(len(error_logs), 1)
+        self.assertIn("Simulated DB error", error_logs[0].error)
+
+        # Cleanup
+        frappe.db.delete("Error Log", {"reference_name": test_session})
         frappe.db.delete("QIF Staging Record", {"import_session": test_session})
         frappe.db.delete("Bank Statement Import", {"name": test_session})
         frappe.db.commit()

@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import frappe
 from frappe.model.document import Document
+from vyogo_frappe_qif.importer.tenant_compat import get_current_tenant_id
 
 
 class QIFStagingRecord(Document):
@@ -14,13 +15,11 @@ class QIFStagingRecord(Document):
         self._compute_dedupe_hash()
 
     def _ensure_tenant_id(self):
-        """Multi-tenant isolation: Stamp tenant_id from active session if unset."""
+        """Stamp tenant_id from active session if unset and in multi-tenant environment."""
         if not self.tenant_id:
-            session_tenant = getattr(frappe.local, "session", {}).get("data", {}).get("tenant_id")
-            if not session_tenant and frappe.session.user != "Administrator":
-                session_tenant = frappe.db.get_value("User", frappe.session.user, "tenant_id")
-            if session_tenant:
-                self.tenant_id = session_tenant
+            resolved_tenant = get_current_tenant_id()
+            if resolved_tenant:
+                self.tenant_id = resolved_tenant
 
     def _compute_dedupe_hash(self):
         """Compute deterministic occurrence hash for idempotency and duplicate checking."""
