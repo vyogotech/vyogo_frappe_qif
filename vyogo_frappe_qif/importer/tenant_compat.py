@@ -90,7 +90,18 @@ def ensure_tenant_valid_dict_patch() -> None:
 	if not is_multitenant_environment():
 		return
 
-	# Check if saas_platform or frappe_microservice already patched it
+	try:
+		from frappe.model.base_document import BaseDocument
+	except (ImportError, ModuleNotFoundError):
+		return
+
+	# A host (saas_platform, frappe_microservice) already patched it with its own
+	# tenant provider. Never call its patch again: frappe_microservice stores the
+	# provider argument on every call, so a call without one would clear it and
+	# switch off the host's cross-tenant write checks.
+	if getattr(BaseDocument, "_tenant_valid_dict_patched", False):
+		return
+
 	try:
 		from saas_platform.utils.tenant import patch_valid_dict_for_tenant_id
 
@@ -106,14 +117,6 @@ def ensure_tenant_valid_dict_patch() -> None:
 		return
 	except ImportError:
 		pass
-
-	try:
-		from frappe.model.base_document import BaseDocument
-	except (ImportError, ModuleNotFoundError):
-		return
-
-	if getattr(BaseDocument, "_tenant_valid_dict_patched", False):
-		return
 
 	original_get_valid_dict = BaseDocument.get_valid_dict
 
