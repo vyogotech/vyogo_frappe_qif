@@ -25,8 +25,6 @@ from vyogo_frappe_qif.importer.tenant_compat import (
 
 logger = logging.getLogger(__name__)
 
-ensure_tenant_valid_dict_patch()
-
 
 def _build_row_dict(row: Any) -> dict[str, Any]:
 	payee = getattr(row, "payee", "") or ""
@@ -75,6 +73,10 @@ def _insert_bank_transaction(
 	if row_tenant:
 		bt_doc.tenant_id = row_tenant
 	bt_doc.insert(ignore_permissions=True)
+	# As ERPNext's own import does: submit when the Bank Statement Import asks for it.
+	if getattr(import_doc, "submit_after_import", 0) and getattr(bt_doc, "docstatus", 0) == 0:
+		bt_doc.flags.ignore_permissions = True
+		bt_doc.submit()
 
 	if row_tenant and frappe.db.has_column("Bank Transaction", "tenant_id"):
 		actual_tenant = frappe.db.get_value("Bank Transaction", bt_doc.name, "tenant_id")
@@ -113,6 +115,8 @@ def _find_existing_bank_transaction(
 		"deposit": deposit,
 		"withdrawal": withdrawal,
 		"reference_number": ref_no,
+		# A cancelled line is gone in ERPNext terms: importing the row again is right.
+		"docstatus": ["!=", 2],
 	}
 	if row_tenant and frappe.db.has_column("Bank Transaction", "tenant_id"):
 		filters["tenant_id"] = row_tenant
