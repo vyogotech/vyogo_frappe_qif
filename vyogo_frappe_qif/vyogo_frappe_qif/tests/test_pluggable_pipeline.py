@@ -125,3 +125,30 @@ class TestPluggablePipeline(unittest.TestCase):
 			lines = list(get_file_line_iterator(fake_remote_file))
 			self.assertEqual(len(lines), 4)
 			self.assertEqual(lines[0], "!Type:Bank")
+
+	def test_staging_record_manual_creation_blocked(self):
+		"""QIF Staging Records are system-managed and block manual insertion."""
+		bsi = frappe.get_doc(
+			{
+				"doctype": "Bank Statement Import",
+				"company": "Vyogo Technologies",
+				"bank_account": self.bank_account,
+				"status": "Pending",
+			}
+		).insert(ignore_permissions=True)
+
+		try:
+			staging_doc = frappe.get_doc(
+				{
+					"doctype": "QIF Staging Record",
+					"import_session": bsi.name,
+					"date": "2026-05-12",
+					"amount": 100.0,
+				}
+			)
+			with self.assertRaises(frappe.PermissionError) as cm:
+				staging_doc.insert(ignore_permissions=True)
+			self.assertIn("system-managed", str(cm.exception))
+		finally:
+			frappe.db.delete("Bank Statement Import", {"name": bsi.name})
+			frappe.db.commit()

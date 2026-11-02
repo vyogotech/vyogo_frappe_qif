@@ -12,6 +12,12 @@ from vyogo_frappe_qif.importer.tenant_compat import get_current_tenant_id
 
 
 class QIFStagingRecord(Document):
+	def before_insert(self):
+		frappe.throw(
+			frappe._("QIF Staging Records are system-managed and cannot be created manually."),
+			frappe.PermissionError,
+		)
+
 	def validate(self):
 		self._ensure_tenant_id()
 		self._compute_dedupe_hash()

@@ -12,6 +12,19 @@ try:
 except Exception:
 	pass
 
+override_doctype_class = {
+	"Bank Statement Import": "vyogo_frappe_qif.importer.erpnext_patch.CustomBankStatementImport"
+}
+
+override_whitelisted_methods = {
+	"erpnext.accounts.doctype.bank_statement_import.bank_statement_import.get_preview_from_template": (
+		"vyogo_frappe_qif.importer.erpnext_patch.get_preview_from_template"
+	),
+	"erpnext.accounts.doctype.bank_statement_import.bank_statement_import.form_start_import": (
+		"vyogo_frappe_qif.importer.erpnext_patch.form_start_import"
+	),
+}
+
 doc_events = {
 	"Bank Statement Import": {"validate": "vyogo_frappe_qif.importer.erpnext_patch.doc_event_validate"}
 }

@@ -208,8 +208,11 @@ def process_qif_batch(
 	tenant_id: str | None = None,
 	reference_builder: str | Callable | None = None,
 	queue: str | None = None,
+	queue_name: str | None = None,
+	**kwargs: Any,
 ) -> dict[str, Any] | None:
 	"""Asynchronous chunked worker processing QIF Staging Records into ERPNext Bank Transactions."""
+	resolved_queue = queue_name or queue or kwargs.get("queue_name")
 	ensure_tenant_valid_dict_patch()
 	setup_worker_tenant_context(user_email=user, tenant_id=tenant_id)
 	ref_builder = resolve_reference_builder(reference_builder)
@@ -243,7 +246,7 @@ def process_qif_batch(
 
 		frappe.db.commit()
 		_publish_progress(import_session, user)
-		_chain_next_batch(import_session, user, tenant_id, batch_size, reference_builder, queue)
+		_chain_next_batch(import_session, user, tenant_id, batch_size, reference_builder, resolved_queue)
 		return {"status": "in_progress", "import_session": import_session}
 	except Exception as exc:
 		_handle_batch_crash(import_session, exc)
