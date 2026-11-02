@@ -347,3 +347,24 @@ class TestQifImporter(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    def test_bank_statement_import_allows_qif_file(self):
+        """Test that Bank Statement Import can be saved with a .qif file without Template Error."""
+        from vyogo_frappe_qif.importer.erpnext_patch import patch_bank_statement_import
+        patch_bank_statement_import()
+
+        bank_account = _ensure_test_bank_account()
+        bsi = frappe.get_doc({
+            "doctype": "Bank Statement Import",
+            "company": "Vyogo Technologies",
+            "bank_account": bank_account,
+            "import_file": "/private/files/myob_test.qif",
+            "status": "Pending",
+        })
+        bsi.insert(ignore_permissions=True)
+        self.assertTrue(bsi.name)
+
+        # Cleanup
+        frappe.db.delete("Bank Statement Import", {"name": bsi.name})
+        frappe.db.commit()
+
+

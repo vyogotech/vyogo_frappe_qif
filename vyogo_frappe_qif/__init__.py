@@ -8,3 +8,9 @@ try:
     ensure_tenant_valid_dict_patch()
 except Exception:
     pass
+
+try:
+    from vyogo_frappe_qif.importer.erpnext_patch import patch_bank_statement_import
+    patch_bank_statement_import()
+except Exception:
+    pass

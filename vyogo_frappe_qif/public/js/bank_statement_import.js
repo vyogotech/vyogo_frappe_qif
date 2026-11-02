@@ -2,14 +2,27 @@
 // For license information, please see license.txt
 
 frappe.ui.form.on("Bank Statement Import", {
-    refresh(frm) {
-        if (!frm.is_new()) {
-            const file_url = frm.doc.import_file || "";
-            const is_qif = file_url.toLowerCase().endsWith(".qif") || frm.doc.custom_format === "QIF";
+    setup(frm) {
+        // Allow .qif and .QIF in the upload dialog file restrictions
+        const file_field = frm.get_field("import_file");
+        if (file_field && file_field.df) {
+            file_field.df.options = file_field.df.options || {};
+            file_field.df.options.restrictions = file_field.df.options.restrictions || {};
+            let allowed = file_field.df.options.restrictions.allowed_file_types || [".csv", ".xls", ".xlsx", ".TXT", ".txt"];
+            if (!allowed.includes(".qif")) {
+                allowed.push(".qif", ".QIF");
+            }
+            file_field.df.options.restrictions.allowed_file_types = allowed;
+        }
+    },
 
-            // If pending or file is QIF, show "Start QIF Import"
-            if (frm.doc.status === "Pending" || !frm.doc.status || is_qif) {
-                frm.add_custom_button(__("Start QIF Import"), () => {
+    refresh(frm) {
+        const file_url = (frm.doc.import_file || "").toLowerCase();
+        const is_qif = file_url.endsWith(".qif");
+
+        if (is_qif && !frm.is_new()) {
+            if (frm.doc.status === "Pending" || !frm.doc.status) {
+                frm.page.set_primary_action(__("Start QIF Import"), () => {
                     frappe.call({
                         method: "vyogo_frappe_qif.api.import_qif",
                         args: {
@@ -28,10 +41,9 @@ frappe.ui.form.on("Bank Statement Import", {
                             }
                         },
                     });
-                }).addClass("btn-primary");
+                });
             }
 
-            // Undo QIF Import with Ledger Guard protection
             if (frm.doc.status === "Success" || frm.doc.status === "Partial Success") {
                 frm.add_custom_button(__("Undo QIF Import"), () => {
                     frappe.confirm(
